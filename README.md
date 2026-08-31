@@ -50,7 +50,7 @@ Cubeek_for_RFM26W_GFSK contains the code to transmit GFSK signal containing the 
 
 Necessary libraries that need to be copy pasted inside the libraries folder of Arduino are also provided.
 
-IMPORTANT NOTE: Please read the SDR-Manual PDF file to understand the steps to follow, libraries to use/download, and the expected results after uploading the code in CUBEEK.
+IMPORTANT NOTE: DO NOT forget to select Atmega 328P (3.3V, 8Mhz) under Tools-Processor before uploading. Read the SDR-Manual PDF file to understand the steps to follow, libraries to use/download, and the expected results after uploading the code in CUBEEK.
 You also need to download CWGet software to decode Morse and SoundModem_500bps software to decode GFSK.
 
 Enjoy!!
