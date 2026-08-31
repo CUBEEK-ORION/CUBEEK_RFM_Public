@@ -33,12 +33,16 @@ Download and add these libraries in order to run CUBEEK software properly. Follo
 3. GPS: [click here](https://github.com/mikalhart/TinyGPSPlus.git)
 4. BMP085: [click here](https://github.com/adafruit/Adafruit-BMP085-Library.git)
 5. BusIO: [click here](https://github.com/adafruit/Adafruit_BusIO) (library for I2C abstraction for bmp085)
+6. OneWire: [click here](https://github.com/PaulStoffregen/OneWire) 
+7. MPU6050: [click here](https://github.com/electroniccats/mpu6050) 
+Note: If this MPU6050 library does not work, download this one:   
+8. Adafruit_MPU6050: [click here](https://github.com/adafruit/Adafruit_MPU6050) 
 
 ## Software Required
-Download software from following their links.
+Download software from following their links. Additional Software links are provided in the file named SDR-Manual available in this repo. 
 1. Arduino IDE: [click here](https://www.arduino.cc/en/software)
 2. FT232R Driver: [click here](https://ftdichip.com/drivers/vcp-drivers/)
-
+3. Soundmodem_500bd: [click here](https://github.com/orionspacenepal/SanoSat-1-SoundModem-500-bps-Public)
 
 In this repository, you will find two separate files to transmit different signal formats using the CUBEEK educational kit.
 Cubeek_for_RFM26W_CW contains the code to transmit morse signal that contains sensor reads from the CUBEEK.

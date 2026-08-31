@@ -4,9 +4,12 @@
 #include <Adafruit_BMP085.h>
 #include <SPI.h>
 #include <RH_RF24.h>
+#include <Adafruit_MPU6050.h>
 
-// --- RFM24 Setup ---
-RH_RF24 rf24(10, 2); // CS=10, INT=2
+// --- RF24 Setup ---
+#define RFM_CS 10
+#define RFM_INT 2
+RH_RF24 rf24(RFM_CS, RFM_INT);
 
 // --- Temperature Sensor (DS18B20) Setup ---
 #define ONE_WIRE_BUS 6
@@ -27,24 +30,6 @@ float elapsedTime, currentTime, previousTime;
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin();
-
-  // Initialize RFM24
-  if (!rf24.init()) {
-    Serial.println("RFM24 init failed");
-    while (1);
-  }
-  
-  if (!rf24.setFrequency(434.0)) {
-    Serial.println("Failed to set frequency");
-    while (1);
-  }
-
-  // Set modulation to GFSK 500 bps, 1 kHz deviation
-if (!rf24.setModemConfig(RH_RF24::GFSK_Rb0_5Fd1)) {
-  Serial.println("Modem config failed");
-  while (1);
-}
 
   // Initialize DS18B20
   tempSensor.begin();
@@ -56,6 +41,7 @@ if (!rf24.setModemConfig(RH_RF24::GFSK_Rb0_5Fd1)) {
   }
 
   // Initialize MPU6050
+  Wire.begin();
   Wire.beginTransmission(MPU);
   Wire.write(0x6B);
   Wire.write(0x00);
@@ -63,8 +49,27 @@ if (!rf24.setModemConfig(RH_RF24::GFSK_Rb0_5Fd1)) {
 
   calculate_IMU_error();
 
+if (!rf24.init()) {
+    Serial.println("RF24 init failed");
+    while (1);
+  }
+
+rf24.setFrequency(436.6);
+
+  // Set modem config to GFSK_Rb0_5Fd1 — 0.5 kbps, 1 kHz deviation
+  if (!rf24.setModemConfig(RH_RF24::GFSK_Rb0_5Fd1)) {
+    Serial.println("Modem config failed");
+    while (1);
+  }
+
+  rf24.setTxPower(13); // 13 dBm (adjust if needed)
+
   currentTime = millis();
+  
+  Serial.println("RF24 initialized with GFSK 500bps @1kHz deviation");
 }
+
+
 
 void loop() {
   // --- Read DS18B20 Temperature ---
@@ -79,20 +84,38 @@ void loop() {
   // --- Read MPU6050 ---
   readIMU();
 
-  // --- Prepare message to send ---
-  String message = "TempDS:" + String(ds_temp, 1) + "C,"
-                   "TempBMP:" + String(bmp_temp, 1) + "C,"
-                   "Pres:" + String(pressure, 1) + "Pa,"
-                   "Alt:" + String(altitude, 1) + "m,"
-                   "Roll:" + String(roll, 1) + ","
-                   "Pitch:" + String(pitch, 1) + ","
-                   "Yaw:" + String(yaw, 1);
+  // --- Combine and Print All Sensor Data ---
+  Serial.print("DS18B20 Temp: "); Serial.print(ds_temp); Serial.print(" *C\t");
+  Serial.print("BMP180 Temp: "); Serial.print(bmp_temp); Serial.print(" *C\t");
+  Serial.print("Pressure: "); Serial.print(pressure); Serial.print(" hPa\t");
+  Serial.print("Altitude: "); Serial.print(altitude); Serial.print(" m\t");
+  Serial.print("Roll: "); Serial.print(roll); Serial.print("\tPitch: "); Serial.print(pitch); Serial.print("\tYaw: "); Serial.println(yaw);
 
-  Serial.println("Sending: " + message);
+  char dsBuf[8], bmpTBuf[8], pBuf[10], altBuf[8];
+  char rollBuf[8], pitchBuf[8], yawBuf[8];
 
-  // Send via RF24
-  rf24.send((uint8_t *)message.c_str(), message.length());
+  dtostrf(ds_temp,  1, 1, dsBuf);
+  dtostrf(bmp_temp, 1, 1, bmpTBuf);
+  dtostrf(pressure, 1, 1, pBuf);
+  dtostrf(altitude, 1, 1, altBuf);
+  dtostrf(roll,     1, 1, rollBuf);
+  dtostrf(pitch,    1, 1, pitchBuf);
+  dtostrf(yaw,      1, 1, yawBuf);
+
+  static char payload[140];
+  snprintf(payload, sizeof(payload),
+           "TempDS:%sC,TempBMP:%sC,Pres:%sPa,Alt:%sm,Roll:%s,Pitch:%s,Yaw:%s",
+           dsBuf, bmpTBuf, pBuf, altBuf, rollBuf, pitchBuf, yawBuf);
+
+  uint16_t payloadLen = strlen(payload);
+
+  if (!rf24.send((uint8_t *)payload, payloadLen)) {
+    Serial.println("RF24 send failed");
+  }
   rf24.waitPacketSent();
+
+  Serial.print("TX ("); Serial.print(payloadLen); Serial.print(" bytes): ");
+  Serial.println(payload);
 
   delay(2000);
 }
@@ -114,18 +137,21 @@ void calculate_IMU_error() {
   AccErrorX /= 200;
   AccErrorY /= 200;
 
+  // NOTE: raw ticks are converted to deg/s ONCE here (raw/131.0), then
+  // averaged directly. Dividing by 131.0 a second time when accumulating
+  // makes the bias ~131x too small.
   c = 0;
   while (c < 200) {
     Wire.beginTransmission(MPU);
     Wire.write(0x43);
     Wire.endTransmission(false);
     Wire.requestFrom(MPU, 6, true);
-    GyroX = (Wire.read() << 8 | Wire.read()) / 131.0;
-    GyroY = (Wire.read() << 8 | Wire.read()) / 131.0;
-    GyroZ = (Wire.read() << 8 | Wire.read()) / 131.0;
-    GyroErrorX += GyroX;
-    GyroErrorY += GyroY;
-    GyroErrorZ += GyroZ;
+    int16_t rawGX = (Wire.read() << 8) | Wire.read();
+    int16_t rawGY = (Wire.read() << 8) | Wire.read();
+    int16_t rawGZ = (Wire.read() << 8) | Wire.read();
+    GyroErrorX += rawGX / 131.0;
+    GyroErrorY += rawGY / 131.0;
+    GyroErrorZ += rawGZ / 131.0;
     c++;
   }
   GyroErrorX /= 200;
