@@ -1,10 +1,11 @@
+// Knine-S 2026/9/4
+
 #include <Wire.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Adafruit_BMP085.h>
 #include <SPI.h>
 #include <RH_RF24.h>
-#include <Adafruit_MPU6050.h>
 
 // --- RF24 Setup ---
 #define RFM_CS 10
@@ -30,18 +31,31 @@ float elapsedTime, currentTime, previousTime;
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("=====================================================");
+  Serial.println(" Namaste! Welcome to CubeSat Sensor GFSK Transmitter!");
+  Serial.println("=====================================================");
+
+  Wire.begin();
 
   // Initialize DS18B20
-  tempSensor.begin();
+  if(!tempSensor.begin())
+  {
+    Serial.println("Temperature sensor not found!");
+    while (1);
+  }
+    Serial.println("Temperature sensor found!");
 
   // Initialize BMP180
   if (!bmp.begin()) {
     Serial.println("BMP180 sensor not found!");
     while (1);
   }
+    Serial.println("BMP180 sensor found!");
 
   // Initialize MPU6050
-  Wire.begin();
   Wire.beginTransmission(MPU);
   Wire.write(0x6B);
   Wire.write(0x00);
@@ -49,12 +63,12 @@ void setup() {
 
   calculate_IMU_error();
 
-if (!rf24.init()) {
+  if (!rf24.init()) {
     Serial.println("RF24 init failed");
     while (1);
   }
 
-rf24.setFrequency(436.6);
+  rf24.setFrequency(433.3);
 
   // Set modem config to GFSK_Rb0_5Fd1 — 0.5 kbps, 1 kHz deviation
   if (!rf24.setModemConfig(RH_RF24::GFSK_Rb0_5Fd1)) {
@@ -62,14 +76,48 @@ rf24.setFrequency(436.6);
     while (1);
   }
 
-  rf24.setTxPower(13); // 13 dBm (adjust if needed)
+  rf24.setTxPower(0x7f); // 13 dBm (adjust if needed)
+  
+  const uint8_t sync_word[] = {0x01,0x2D,0xD4,0x00,0x00};
+  rf24.set_properties(0x1100,sync_word,sizeof(sync_word));
+
+  // CRC
+  const uint8_t crc_config[] = {0x85};
+  rf24.set_properties(0x1200,crc_config,sizeof(crc_config));
+
+  // PREAMBLE
+  const uint8_t preamble_config[] = {0x04,0x14,0x00,0x00,0x31};
+  rf24.set_properties(0x1000,preamble_config,sizeof(preamble_config));
+
+  // PACKET LENGTH
+  const uint8_t pkt_len[] = {0x02,0x01,0x00};
+  rf24.set_properties(0x1208,pkt_len,sizeof(pkt_len));
+
+  // FIELD 1
+  const uint8_t pkt_field1[] = {0x00,0x01,0x00,0xAA};
+  rf24.set_properties(0x120D,pkt_field1,sizeof(pkt_field1));
+
+  // FIELD 2
+  const uint8_t pkt_field2[] = {0x00,0xFF,0x00,0xAA};
+  rf24.set_properties(0x1211,pkt_field2,sizeof(pkt_field2));
+
+  // UNUSED FIELDS
+  const uint8_t pkt_fieldn[] = {0x00,0x00,0x00,0x00};
+  rf24.set_properties(0x1215,pkt_fieldn,sizeof(pkt_fieldn));
+  rf24.set_properties(0x1219,pkt_fieldn,sizeof(pkt_fieldn));
+  rf24.set_properties(0x121D,pkt_fieldn,sizeof(pkt_fieldn));
 
   currentTime = millis();
-  
-  Serial.println("RF24 initialized with GFSK 500bps @1kHz deviation");
+
+  Serial.println();
+  Serial.println("---------------------------------");
+  Serial.println("RF24 initialized");
+  Serial.println("Frequency : 433.3 MHz");
+  Serial.println("Modulation: GFSK");
+  Serial.println("Bit rate  : 500 bps");
+  Serial.println("Deviation : 1 kHz");
+  Serial.println("---------------------------------");
 }
-
-
 
 void loop() {
   // --- Read DS18B20 Temperature ---
@@ -102,26 +150,85 @@ void loop() {
   dtostrf(pitch,    1, 1, pitchBuf);
   dtostrf(yaw,      1, 1, yawBuf);
 
-  static char payload[140];
-  snprintf(payload, sizeof(payload),
-           "TempDS:%sC,TempBMP:%sC,Pres:%sPa,Alt:%sm,Roll:%s,Pitch:%s,Yaw:%s",
-           dsBuf, bmpTBuf, pBuf, altBuf, rollBuf, pitchBuf, yawBuf);
+  uint8_t framedPayload[110];
 
-  uint16_t payloadLen = strlen(payload);
+  uint8_t textLen = snprintf(
+    (char *)&framedPayload[5],
+    105,
+    "TempDS:%sC,TempBMP:%sC,Pres:%sPa,Alt:%sm,Roll:%s,Pitch:%s,Yaw:%s",
+    dsBuf,
+    bmpTBuf,
+    pBuf,
+    altBuf,
+    rollBuf,
+    pitchBuf,
+    yawBuf
+  );
 
-  if (!rf24.send((uint8_t *)payload, payloadLen)) {
-    Serial.println("RF24 send failed");
+  // Check payload length
+  if (textLen > 100)
+  {
+    Serial.println("Payload too long!");
+    delay(2000);
+    return;
   }
-  rf24.waitPacketSent();
 
-  Serial.print("TX ("); Serial.print(payloadLen); Serial.print(" bytes): ");
-  Serial.println(payload);
+  // Add marker
+  framedPayload[1] = 0xFF;
+  framedPayload[2] = 0xFF;
+  framedPayload[3] = 0x00;
+  framedPayload[4] = 0x00;
+
+
+  // Field 1 = Field 2 length
+  // Field 2 = marker + actual payload
+  uint8_t field2Len = textLen + 4;
+  framedPayload[0] = field2Len;
+  uint8_t framedLen = textLen + 5;
+
+  // UPDATE FIELD 2 LENGTH
+  rf24.set_properties(0x1212,&field2Len,1);
+
+  // TRANSMIT
+  if (!rf24.send(framedPayload,framedLen))
+  {
+    Serial.println("RF24 send failed!");
+  }
+  else
+  {
+    bool sent = rf24.waitPacketSent(3000);
+
+    if (!sent)
+    {
+      Serial.println(
+        "waitPacketSent timed out!"
+      );
+    }
+    else
+    {
+      Serial.print("TX (");
+      Serial.print(framedLen);
+      Serial.print(" bytes): ");
+
+      Serial.println(
+        (char *)&framedPayload[5]
+      );
+    }
+  }
 
   delay(2000);
 }
 
 void calculate_IMU_error() {
   int c = 0;
+  
+  AccErrorX = 0;
+  AccErrorY = 0;
+
+  GyroErrorX = 0;
+  GyroErrorY = 0;
+  GyroErrorZ = 0;
+
   while (c < 200) {
     Wire.beginTransmission(MPU);
     Wire.write(0x3B);
